@@ -155,18 +155,18 @@ class ERobPriceCalculator:
     
     def normalize_model_code(self, model_code):
         """标准化型号编码，补全缺失部分"""
-        # 处理特殊版本标记
+        # 处理特殊版本标记 - 确保版本标记不会重复添加
         version = ""
         if '[' in model_code:
-            base_code, version = model_code.split('[')
-            version = version.strip(']')
-            model_code = base_code.strip()
+            # 提取出主型号和版本标记
+            parts = model_code.split('[')
+            model_code = parts[0].strip()
+            # 只取第一个版本标记
+            version = '[' + parts[1].split(']')[0] + ']'
         
         # 如果不是以eRob开头，添加eRob前缀
-        if not model_code.startswith('eRob'):
-            # 检查是否以数字开头（如80H120I-BHM-18CN）
-            if model_code[0].isdigit():
-                model_code = 'eRob' + model_code
+        if not model_code.startswith('eRob') and model_code[0].isdigit():
+            model_code = 'eRob' + model_code
         
         # 解析型号主体部分
         parts = model_code.split('-')
@@ -220,14 +220,39 @@ class ERobPriceCalculator:
         else:
             normalized_code += '-18CN'  # 默认接口
         
-        # 添加版本标记（如果有）
+        # 最后添加版本标记（如果有）
         if version:
-            normalized_code += f"[{version}]"
+            normalized_code = normalized_code + version
         
         return normalized_code
     
     def parse_model_code(self, model_code):
         """解析型号编码，提取各部分信息"""
+        # 检查是否为特殊产品
+        special_products = [
+            'eRob Universal Accessories Kit',
+            'eLine - RJ45 ECAT -30',
+            'eRob to PC Connector'
+        ]
+        
+        for product in special_products:
+            if product in model_code:
+                # 对于特殊产品，返回简化的信息
+                return {
+                    'full_model': model_code,
+                    'base_model': product,
+                    'model_code': model_code,
+                    'diameter': 0,
+                    'gear_type': '',
+                    'ratio': 0,
+                    'form_type': '',
+                    'config': '',
+                    'interface': '',
+                    'version': '',
+                    'has_ethercat': 'ECAT' in model_code,
+                    'is_special_product': True
+                }
+        
         # 标准化型号
         normalized_model = self.normalize_model_code(model_code)
         
@@ -256,28 +281,36 @@ class ERobPriceCalculator:
         ratio = int(ratio_match.group(1)) if ratio_match else self.default_ratio.get(diameter, 120)
         
         # 提取形状类型
-        form_type = 'I'  # 默认I型
-        if 'T' in base_info[base_info.find(str(ratio)) + len(str(ratio)):]:
-            form_type = 'T'
+        form_type_match = re.search(r'\d+([IT])', base_info)
+        form_type = form_type_match.group(1) if form_type_match else 'I'
         
-        # 解析配置部分
-        config = parts[1] if len(parts) > 1 else ''
+        # 提取配置和接口
+        config = parts[1] if len(parts) > 1 else 'BHM'
+        interface = parts[2] if len(parts) > 2 else '18CN'
         
-        # 解析通信和传感器部分
-        interface = parts[2] if len(parts) > 2 else ''
+        # 确定基本型号
+        base_model = f"eRob{diameter}{gear_type}"
         
-        return {
-            'full_model': model_code + (f"[{version}]" if version else ""),
-            'base_model': f"eRob{diameter}{gear_type}",
+        # 检查接口是否为EtherCAT
+        is_ethercat = 'ET' in interface
+        
+        # 返回解析结果
+        result = {
+            'model_code': normalized_model,
+            'full_model': normalized_model + (f"[{version}]" if version else ""),
+            'base_model': base_model,
             'diameter': diameter,
             'gear_type': gear_type,
             'ratio': ratio,
             'form_type': form_type,
             'config': config,
             'interface': interface,
+            'is_ethercat': is_ethercat,
             'version': version,
-            'has_ethercat': 'E' in interface
+            'is_special_product': False
         }
+        
+        return result
     
     def get_price_range(self, quantity):
         """根据数量确定价格范围"""
@@ -389,7 +422,7 @@ class ERobPriceCalculator:
             
             # 检查是否有EtherCAT
             model_info = self.parse_model_code(model_code)
-            if model_info['has_ethercat']:
+            if model_info['is_ethercat']:
                 has_ethercat = True
         
         # 添加默认配件
@@ -450,20 +483,90 @@ class ERobPriceCalculator:
             'has_ethercat': has_ethercat
         }
     
+    def find_image_for_model(self, model_code):
+        """使用parse_model_code函数帮助查找图片"""
+        print(f"尝试为型号 '{model_code}' 查找图片")
+        
+        # 使用已有的解析函数获取标准化的基本型号
+        parsed_info = self.parse_model_code(model_code)
+        base_model = parsed_info['base_model']  # 如 eRob80H
+        
+        print(f"  解析后的基本型号: {base_model}")
+        
+        # 1. 检查是否有完全匹配
+        if model_code in self.images:
+            print(f"  完全匹配成功: {self.images[model_code]}")
+            return self.images[model_code]
+        
+        # 2. 使用基本型号匹配
+        if base_model in self.images:
+            print(f"  基本型号匹配成功: {self.images[base_model]}")
+            return self.images[base_model]
+        
+        # 3. 特殊产品处理
+        special_products = {
+            'eRob Universal Accessories Kit': 'images/Kit.png',
+            'eLine - RJ45 ECAT -30': 'images/RJ45.png',
+            'eRob to PC Connector': 'images/PC.png'
+        }
+        
+        for product, image in special_products.items():
+            if product in model_code:
+                print(f"  特殊产品匹配成功: {image}")
+                return image
+        
+        print(f"  未找到匹配图片")
+        return None
+
+    def insert_cell_image(self, ws, row, col, image_path):
+        """将图片插入单元格并完全覆盖单元格"""
+        if not os.path.exists(image_path):
+            print(f"图片文件不存在: {image_path}")
+            return False
+        
+        try:
+            # 获取单元格尺寸
+            column_width = ws.column_dimensions[chr(64 + col)].width or 13  # A列宽度默认13
+            row_height = ws.row_dimensions[row].height or 75  # 行高默认75
+            
+            # 计算图片尺寸，使其完全覆盖单元格
+            # 这里用7作为列宽到像素的转换因子，是一个近似值
+            cell_width_px = int(column_width * 7)  
+            cell_height_px = int(row_height)
+            
+            # 创建图片对象
+            img = Image(image_path)
+            img.width = cell_width_px
+            img.height = cell_height_px
+            
+            # 插入图片到单元格
+            cell_ref = f'{chr(64 + col)}{row}'
+            ws.add_image(img, cell_ref)
+            
+            print(f"  图片已插入: {cell_ref}, 尺寸: {cell_width_px}x{cell_height_px}px")
+            return True
+        except Exception as e:
+            print(f"插入图片时出错: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
     def export_to_quotation(self, results):
         """导出报价单到Excel文件"""
         # 创建工作簿
         wb = Workbook()
         ws = wb.active
         ws.title = "Quotation"
-        
-        # 设置列宽
-        ws.column_dimensions['A'].width = 15
-        ws.column_dimensions['B'].width = 30
-        ws.column_dimensions['C'].width = 15
-        ws.column_dimensions['D'].width = 15
-        ws.column_dimensions['E'].width = 15
-        ws.column_dimensions['F'].width = 15
+
+        ws.row_dimensions[4].height = 35
+        ws.row_dimensions[5].height = 35  # 例如设置第5行高度为35
+        # 设置列宽 调整宽度值
+        ws.column_dimensions['A'].width = 13 # 图片 
+        ws.column_dimensions['B'].width = 30 # 型号
+        ws.column_dimensions['C'].width = 10 # 数量
+        ws.column_dimensions['D'].width = 10 # 重量
+        ws.column_dimensions['E'].width = 12 # 单价
+        ws.column_dimensions['F'].width = 12 # 金额
         
         # 设置合并单元格
         ws.merge_cells('A1:F1')  # 标题行
@@ -480,8 +583,8 @@ class ERobPriceCalculator:
         # 设置表头样式
         cell = ws['A6']
         cell.value = "Quotation List"
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        cell.font = Font(name='Microsoft YaHei', size=16, bold=True, color="FFFFFF")
+        cell.fill = PatternFill(start_color="FF538DD5", end_color="FF538DD5", fill_type="solid")
         cell.alignment = Alignment(horizontal='center', vertical='center')
         
         # 设置客户信息
@@ -516,7 +619,7 @@ class ERobPriceCalculator:
         for col, header in enumerate(headers, 1):
             cell = ws.cell(row=7, column=col)
             cell.value = header
-            cell.font = Font(bold=True)
+            cell.font = Font(name='Microsoft YaHei', bold=True)
             cell.fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
             cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             cell.border = Border(
@@ -527,38 +630,35 @@ class ERobPriceCalculator:
             )
         
         # 设置行高
-        ws.row_dimensions[7].height = 40  # 表头行高
+        ws.row_dimensions[7].height = 60  # 表头行高
         
         # 填充产品数据
         row = 8
         for item in results['items']:
             # 设置行高以适应图片
-            ws.row_dimensions[row].height = 60
+            ws.row_dimensions[row].height = 75  # 增加行高确保图片完全嵌入
             
-            # 为所有单元格添加边框
+            # 设置样式和边框
             for col in range(1, 7):
                 cell = ws.cell(row=row, column=col)
+                cell.font = Font(name='Microsoft YaHei')
                 cell.border = Border(
                     left=Side(style='thin'),
                     right=Side(style='thin'),
                     top=Side(style='thin'),
                     bottom=Side(style='thin')
                 )
+                cell.alignment = Alignment(horizontal='center', vertical='center')
             
             # 插入产品图片
-            model_key = item.get('normalized_model', item.get('model', ''))
-            if model_key in self.images and os.path.exists(self.images[model_key]):
-                try:
-                    img = Image(self.images[model_key])
-                    img.width = 60
-                    img.height = 60
-                    ws.add_image(img, f'A{row}')
-                except Exception as e:
-                    print(f"插入图片时出错: {e}")
+            model_code = item.get('model', '')
+            image_path = self.find_image_for_model(model_code)
+            if image_path:
+                self.insert_cell_image(ws, row, 1, image_path)  # 1 表示 A 列
             
             # 填充产品信息
             ws.cell(row=row, column=2).value = item['normalized_model']
-            ws.cell(row=row, column=2).alignment = Alignment(vertical='center')
+            ws.cell(row=row, column=2).alignment = Alignment(horizontal='center', vertical='center')
             
             ws.cell(row=row, column=3).value = item['quantity']
             ws.cell(row=row, column=3).alignment = Alignment(horizontal='center', vertical='center')
@@ -572,9 +672,18 @@ class ERobPriceCalculator:
             # 设置金额格式
             cell = ws.cell(row=row, column=6)
             cell.value = f"$ {item['total_price']:,.2f}"
-            cell.alignment = Alignment(horizontal='right', vertical='center')
+            cell.alignment = Alignment(horizontal='center', vertical='center')
             
             row += 1
+        
+        # 删除临时文件
+        for i in range(8, row):
+            temp_file = f"temp_{i}.xlsx"
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
         
         # 设置备注和合计区域
         remarks_row = row
@@ -596,7 +705,7 @@ class ERobPriceCalculator:
         # 设置合计区域
         subtotal_cell = ws.cell(row=remarks_row, column=5)
         subtotal_cell.value = "SUBTOTAL"
-        subtotal_cell.font = Font(bold=True)
+        subtotal_cell.font = Font(name='Microsoft YaHei', bold=True)
         subtotal_cell.alignment = Alignment(horizontal='center', vertical='center')
         subtotal_cell.border = Border(
             left=Side(style='thin'),
@@ -607,6 +716,7 @@ class ERobPriceCalculator:
         
         subtotal_amount = ws.cell(row=remarks_row, column=6)
         subtotal_amount.value = f"$ {results['subtotal']:,.2f}"
+        subtotal_amount.font = Font(name='Microsoft YaHei')
         subtotal_amount.alignment = Alignment(horizontal='right', vertical='center')
         subtotal_amount.border = Border(
             left=Side(style='thin'),
@@ -617,7 +727,7 @@ class ERobPriceCalculator:
         
         freight_cell = ws.cell(row=remarks_row+1, column=5)
         freight_cell.value = "FREIGHT"
-        freight_cell.font = Font(bold=True)
+        freight_cell.font = Font(name='Microsoft YaHei', bold=True)
         freight_cell.alignment = Alignment(horizontal='center', vertical='center')
         freight_cell.border = Border(
             left=Side(style='thin'),
@@ -628,6 +738,7 @@ class ERobPriceCalculator:
         
         freight_amount = ws.cell(row=remarks_row+1, column=6)
         freight_amount.value = f"$ {results['freight']:,.2f}"
+        freight_amount.font = Font(name='Microsoft YaHei')
         freight_amount.alignment = Alignment(horizontal='right', vertical='center')
         freight_amount.border = Border(
             left=Side(style='thin'),
@@ -638,7 +749,7 @@ class ERobPriceCalculator:
         
         other_cell = ws.cell(row=remarks_row+2, column=5)
         other_cell.value = "OTHER"
-        other_cell.font = Font(bold=True)
+        other_cell.font = Font(name='Microsoft YaHei', bold=True)
         other_cell.alignment = Alignment(horizontal='center', vertical='center')
         other_cell.border = Border(
             left=Side(style='thin'),
@@ -649,6 +760,7 @@ class ERobPriceCalculator:
         
         other_amount = ws.cell(row=remarks_row+2, column=6)
         other_amount.value = "$ -"
+        other_amount.font = Font(name='Microsoft YaHei')
         other_amount.alignment = Alignment(horizontal='center', vertical='center')
         other_amount.border = Border(
             left=Side(style='thin'),
@@ -659,7 +771,7 @@ class ERobPriceCalculator:
         
         total_cell = ws.cell(row=remarks_row+3, column=5)
         total_cell.value = "TOTAL"
-        total_cell.font = Font(bold=True)
+        total_cell.font = Font(name='Microsoft YaHei', bold=True)
         total_cell.alignment = Alignment(horizontal='center', vertical='center')
         total_cell.border = Border(
             left=Side(style='thin'),
@@ -670,6 +782,7 @@ class ERobPriceCalculator:
         
         total_amount = ws.cell(row=remarks_row+3, column=6)
         total_amount.value = f"$ {results['grand_total']:,.2f}"
+        total_amount.font = Font(name='Microsoft YaHei')
         total_amount.alignment = Alignment(horizontal='right', vertical='center')
         total_amount.border = Border(
             left=Side(style='thin'),

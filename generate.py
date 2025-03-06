@@ -450,13 +450,9 @@ class ERobPriceCalculator:
             'has_ethercat': has_ethercat
         }
     
-    def export_to_quotation(self, results, filename=None):
-        """将计算结果导出为标准报价单Excel表格"""
-        if filename is None:
-            today = datetime.now()
-            customer_name = results['customer_info']['name'].replace(' ', '_')
-            filename = f"ZeroErr_Quotation_{customer_name}_{today.strftime('%Y%m%d')}.xlsx"
-        
+    def export_to_quotation(self, results):
+        """导出报价单到Excel文件"""
+        # 创建工作簿
         wb = Workbook()
         ws = wb.active
         ws.title = "Quotation"
@@ -464,167 +460,227 @@ class ERobPriceCalculator:
         # 设置列宽
         ws.column_dimensions['A'].width = 15
         ws.column_dimensions['B'].width = 30
-        ws.column_dimensions['C'].width = 10
-        ws.column_dimensions['D'].width = 10
+        ws.column_dimensions['C'].width = 15
+        ws.column_dimensions['D'].width = 15
         ws.column_dimensions['E'].width = 15
         ws.column_dimensions['F'].width = 15
-        ws.column_dimensions['G'].width = 15
         
-        # 设置边框样式
-        thin_border = Border(
+        # 设置合并单元格
+        ws.merge_cells('A1:F1')  # 标题行
+        ws.merge_cells('A2:B5')  # 客户信息区
+        ws.merge_cells('D2:F5')  # 日期和引用信息区
+        ws.merge_cells('A6:F6')  # Quotation List 标题栏
+        
+        # 设置标题和样式
+        cell = ws['A1']
+        cell.value = "ZeroErr Control Co., Ltd."
+        cell.font = Font(name='Microsoft YaHei', size=16, bold=True, color='002060')
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        
+        # 设置表头样式
+        cell = ws['A6']
+        cell.value = "Quotation List"
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        
+        # 设置客户信息
+        customer_info = results['customer_info']
+        to_text = f"To:  {customer_info.get('name', '')}\n"
+        to_text += f"Company: {customer_info.get('company', '')}\n"
+        to_text += f"Street Address: {customer_info.get('address', '')}\n"
+        to_text += f"City, ST  ZIP Code: {customer_info.get('city', '')}, {customer_info.get('zip', '')}, {customer_info.get('country', '')}\n"
+        to_text += f"Phone: {customer_info.get('phone', '')}"
+        cell = ws['A2']
+        cell.value = to_text
+        cell.font = Font(name='Microsoft YaHei', size=10)
+        cell.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+        
+        # 设置日期和报价号
+        today = datetime.now()
+        date_str = today.strftime('%Y.%m.%d')
+        quotation_number = today.strftime('%Y%m%d') + '01'
+        
+        date_text = f"Date：{date_str}\n"
+        date_text += f"Quotation #: {quotation_number}\n"
+        date_text += f"Street Address：Fuyuan 1st, Fuhai City, ZIP Code：\n"
+        date_text += f"Bao'an，Shen Zhen, 518103\n"
+        date_text += f"Phone：+86 18922807806"
+        cell = ws['D2']
+        cell.value = date_text
+        cell.font = Font(name='Microsoft YaHei', size=10)
+        cell.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+        
+        # 设置表头
+        headers = ["IMAGES", "MODELS", "QUANTITY (PC)", "WEIGHT (KG/PC)", "UNIT PRICE (USD/PC)", "AMOUNT (USD)"]
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=7, column=col)
+            cell.value = header
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            cell.border = Border(
+                left=Side(style='thin'),
+                right=Side(style='thin'),
+                top=Side(style='thin'),
+                bottom=Side(style='thin')
+            )
+        
+        # 设置行高
+        ws.row_dimensions[7].height = 40  # 表头行高
+        
+        # 填充产品数据
+        row = 8
+        for item in results['items']:
+            # 设置行高以适应图片
+            ws.row_dimensions[row].height = 60
+            
+            # 为所有单元格添加边框
+            for col in range(1, 7):
+                cell = ws.cell(row=row, column=col)
+                cell.border = Border(
+                    left=Side(style='thin'),
+                    right=Side(style='thin'),
+                    top=Side(style='thin'),
+                    bottom=Side(style='thin')
+                )
+            
+            # 插入产品图片
+            model_key = item.get('normalized_model', item.get('model', ''))
+            if model_key in self.images and os.path.exists(self.images[model_key]):
+                try:
+                    img = Image(self.images[model_key])
+                    img.width = 60
+                    img.height = 60
+                    ws.add_image(img, f'A{row}')
+                except Exception as e:
+                    print(f"插入图片时出错: {e}")
+            
+            # 填充产品信息
+            ws.cell(row=row, column=2).value = item['normalized_model']
+            ws.cell(row=row, column=2).alignment = Alignment(vertical='center')
+            
+            ws.cell(row=row, column=3).value = item['quantity']
+            ws.cell(row=row, column=3).alignment = Alignment(horizontal='center', vertical='center')
+            
+            ws.cell(row=row, column=4).value = item['weight']
+            ws.cell(row=row, column=4).alignment = Alignment(horizontal='center', vertical='center')
+            
+            ws.cell(row=row, column=5).value = item['unit_price']
+            ws.cell(row=row, column=5).alignment = Alignment(horizontal='center', vertical='center')
+            
+            # 设置金额格式
+            cell = ws.cell(row=row, column=6)
+            cell.value = f"$ {item['total_price']:,.2f}"
+            cell.alignment = Alignment(horizontal='right', vertical='center')
+            
+            row += 1
+        
+        # 设置备注和合计区域
+        remarks_row = row
+        
+        # 合并备注单元格
+        ws.merge_cells(f'A{remarks_row}:D{remarks_row+6}')
+        
+        remarks_cell = ws.cell(row=remarks_row, column=1)
+        remarks_text = "Remarks:\n"
+        remarks_text += f"1. Price term: DAP {customer_info.get('country', 'Australia')}\n"
+        remarks_text += "2. Payment term: T/T, 100% advance payment.\n"
+        remarks_text += "3. Leading time: 12 working days after the payment.\n"
+        remarks_text += "4.The price needs to be updated if the exchange rate fluctuate more than 10%."
+        
+        remarks_cell.value = remarks_text
+        remarks_cell.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+        remarks_cell.font = Font(name='Microsoft YaHei', size=10)
+        
+        # 设置合计区域
+        subtotal_cell = ws.cell(row=remarks_row, column=5)
+        subtotal_cell.value = "SUBTOTAL"
+        subtotal_cell.font = Font(bold=True)
+        subtotal_cell.alignment = Alignment(horizontal='center', vertical='center')
+        subtotal_cell.border = Border(
             left=Side(style='thin'),
             right=Side(style='thin'),
             top=Side(style='thin'),
             bottom=Side(style='thin')
         )
         
-        # 标题行 - ZeroErr Control Co., Ltd.
-        ws.merge_cells('A1:G1')
-        cell = ws.cell(row=1, column=1)
-        cell.value = "ZeroErr Control Co., Ltd."
-        cell.font = Font(bold=True, size=14, color="000080")
-        cell.alignment = Alignment(horizontal='center')
+        subtotal_amount = ws.cell(row=remarks_row, column=6)
+        subtotal_amount.value = f"$ {results['subtotal']:,.2f}"
+        subtotal_amount.alignment = Alignment(horizontal='right', vertical='center')
+        subtotal_amount.border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
         
-        # 客户信息 - 左侧
-        customer_info = results['customer_info']
-        ws.cell(row=2, column=1).value = "To:"
-        ws.cell(row=2, column=2).value = customer_info['name']
-        ws.cell(row=3, column=1).value = "Company:"
-        ws.cell(row=3, column=2).value = customer_info['company']
-        ws.cell(row=4, column=1).value = "Street Address:"
-        ws.cell(row=4, column=2).value = customer_info['address']
-        ws.cell(row=5, column=1).value = "City, ST  ZIP Code:"
-        ws.cell(row=5, column=2).value = f"{customer_info['city']}, {customer_info['zip']}, {customer_info['country']}"
-        ws.cell(row=6, column=1).value = "Phone:"
-        ws.cell(row=6, column=2).value = customer_info['phone']
+        freight_cell = ws.cell(row=remarks_row+1, column=5)
+        freight_cell.value = "FREIGHT"
+        freight_cell.font = Font(bold=True)
+        freight_cell.alignment = Alignment(horizontal='center', vertical='center')
+        freight_cell.border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
         
-        # 日期和报价单号 - 右侧
-        today = datetime.now()
-        quotation_number = f"{today.year}{today.month:02d}{today.day:02d}01"
+        freight_amount = ws.cell(row=remarks_row+1, column=6)
+        freight_amount.value = f"$ {results['freight']:,.2f}"
+        freight_amount.alignment = Alignment(horizontal='right', vertical='center')
+        freight_amount.border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
         
-        ws.cell(row=2, column=5).value = "Date:"
-        ws.cell(row=2, column=6).value = today.strftime('%d.%m.%Y')
-        ws.cell(row=3, column=5).value = "Quotation #:"
-        ws.cell(row=3, column=6).value = quotation_number
-        ws.cell(row=4, column=5).value = "Street Address:"
-        ws.cell(row=4, column=6).value = "Fuyuan 1st, Fuhai City, ZIP Code:"
-        ws.cell(row=5, column=5).value = "Bao'an, Shen Zhen, 518103"
-        ws.cell(row=6, column=5).value = "Phone:"
-        ws.cell(row=6, column=6).value = "+86 18922807806"
+        other_cell = ws.cell(row=remarks_row+2, column=5)
+        other_cell.value = "OTHER"
+        other_cell.font = Font(bold=True)
+        other_cell.alignment = Alignment(horizontal='center', vertical='center')
+        other_cell.border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
         
-        # 报价单标题
-        ws.merge_cells('A7:G7')
-        cell = ws.cell(row=7, column=1)
-        cell.value = "Quotation List"
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-        cell.alignment = Alignment(horizontal='center')
+        other_amount = ws.cell(row=remarks_row+2, column=6)
+        other_amount.value = "$ -"
+        other_amount.alignment = Alignment(horizontal='center', vertical='center')
+        other_amount.border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
         
-        # 表头
-        headers = ["IMAGES", "MODELS", "QUANTITY (PC)", "WEIGHT (KG/PC)", "UNIT PRICE (USD/PC)", "AMOUNT (USD)"]
-        for col, header in enumerate(headers, 1):
-            cell = ws.cell(row=8, column=col)
-            cell.value = header
-            cell.font = Font(bold=True)
-            cell.fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
-            cell.alignment = Alignment(horizontal='center', wrap_text=True)
-            cell.border = thin_border
+        total_cell = ws.cell(row=remarks_row+3, column=5)
+        total_cell.value = "TOTAL"
+        total_cell.font = Font(bold=True)
+        total_cell.alignment = Alignment(horizontal='center', vertical='center')
+        total_cell.border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
         
-        # 填充数据
-        row = 9
-        for item in results['items']:
-            # 图片列 - 插入产品图片
-            ws.cell(row=row, column=1).border = thin_border
-            ws.row_dimensions[row].height = 60  # 设置行高以适应图片
-            
-            # 获取图片路径
-            model_key = item.get('base_model', item.get('model', ''))
-            img_path = self.images.get(model_key, '')
-            
-            # 如果找不到精确匹配，尝试查找基础型号
-            if not img_path and 'eRob' in model_key:
-                base_model = re.match(r'(eRob\d+[FH])', model_key)
-                if base_model:
-                    img_path = self.images.get(base_model.group(1), '')
-            
-            # 插入图片（如果存在）
-            if img_path and os.path.exists(img_path):
-                img = Image(img_path)
-                img.width = 60
-                img.height = 60
-                ws.add_image(img, f'A{row}')
-            
-            # 型号
-            ws.cell(row=row, column=2).value = item.get('normalized_model', item.get('model', ''))
-            ws.cell(row=row, column=2).border = thin_border
-            
-            # 数量
-            ws.cell(row=row, column=3).value = item['quantity']
-            ws.cell(row=row, column=3).alignment = Alignment(horizontal='center')
-            ws.cell(row=row, column=3).border = thin_border
-            
-            # 重量
-            ws.cell(row=row, column=4).value = item.get('weight', 0)
-            ws.cell(row=row, column=4).alignment = Alignment(horizontal='center')
-            ws.cell(row=row, column=4).border = thin_border
-            
-            # 单价
-            ws.cell(row=row, column=5).value = item['unit_price']
-            ws.cell(row=row, column=5).alignment = Alignment(horizontal='center')
-            ws.cell(row=row, column=5).border = thin_border
-            
-            # 总价
-            ws.cell(row=row, column=6).value = f"$ {item['total_price']:,.2f}"
-            ws.cell(row=row, column=6).alignment = Alignment(horizontal='right')
-            ws.cell(row=row, column=6).border = thin_border
-            
-            row += 1
-        
-        # 备注
-        remarks_row = row
-        ws.cell(row=remarks_row, column=1).value = "Remarks:"
-        ws.cell(row=remarks_row+1, column=1).value = f"1. Price term: DAP {customer_info['country']}"
-        ws.cell(row=remarks_row+2, column=1).value = "2. Payment term: T/T. 100% advance payment."
-        ws.cell(row=remarks_row+3, column=1).value = "3. Leading time: 12 working days after the payment."
-        ws.cell(row=remarks_row+4, column=1).value = "4.The price needs to be updated if the exchange rate fluctuate more than 10%."
-        
-        # 合计
-        ws.cell(row=remarks_row, column=5).value = "SUBTOTAL"
-        ws.cell(row=remarks_row, column=5).font = Font(bold=True)
-        ws.cell(row=remarks_row, column=5).alignment = Alignment(horizontal='center')
-        ws.cell(row=remarks_row, column=5).border = thin_border
-        ws.cell(row=remarks_row, column=6).value = f"$ {results['subtotal']:,.2f}"
-        ws.cell(row=remarks_row, column=6).alignment = Alignment(horizontal='right')
-        ws.cell(row=remarks_row, column=6).border = thin_border
-        
-        # 运费
-        ws.cell(row=remarks_row+1, column=5).value = "FREIGHT"
-        ws.cell(row=remarks_row+1, column=5).font = Font(bold=True)
-        ws.cell(row=remarks_row+1, column=5).alignment = Alignment(horizontal='center')
-        ws.cell(row=remarks_row+1, column=5).border = thin_border
-        ws.cell(row=remarks_row+1, column=6).value = f"$ {results['freight']:,.2f}"
-        ws.cell(row=remarks_row+1, column=6).alignment = Alignment(horizontal='right')
-        ws.cell(row=remarks_row+1, column=6).border = thin_border
-        
-        # 其他费用
-        ws.cell(row=remarks_row+2, column=5).value = "OTHER"
-        ws.cell(row=remarks_row+2, column=5).font = Font(bold=True)
-        ws.cell(row=remarks_row+2, column=5).alignment = Alignment(horizontal='center')
-        ws.cell(row=remarks_row+2, column=5).border = thin_border
-        ws.cell(row=remarks_row+2, column=6).value = "-"
-        ws.cell(row=remarks_row+2, column=6).alignment = Alignment(horizontal='center')
-        ws.cell(row=remarks_row+2, column=6).border = thin_border
-        
-        # 总计
-        ws.cell(row=remarks_row+3, column=5).value = "TOTAL"
-        ws.cell(row=remarks_row+3, column=5).font = Font(bold=True)
-        ws.cell(row=remarks_row+3, column=5).alignment = Alignment(horizontal='center')
-        ws.cell(row=remarks_row+3, column=5).border = thin_border
-        ws.cell(row=remarks_row+3, column=6).value = f"$ {results['grand_total']:,.2f}"
-        ws.cell(row=remarks_row+3, column=6).alignment = Alignment(horizontal='right')
-        ws.cell(row=remarks_row+3, column=6).border = thin_border
+        total_amount = ws.cell(row=remarks_row+3, column=6)
+        total_amount.value = f"$ {results['grand_total']:,.2f}"
+        total_amount.alignment = Alignment(horizontal='right', vertical='center')
+        total_amount.border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
         
         # 保存文件
+        customer_name = customer_info.get('name', 'Customer').replace(' ', '_')
+        filename = f"ZeroErr_Quotation_{customer_name}_{today.strftime('%Y%m%d')}.xlsx"
         wb.save(filename)
         return filename
 

@@ -7,6 +7,9 @@ from openpyxl.drawing.image import Image
 from datetime import datetime
 import os
 import math
+# 在文件顶部导入
+from template_styles import apply_template_styles
+
 
 # 在这里添加从template_styles.py复制的apply_template_styles函数
 # 应用模板样式
@@ -266,30 +269,51 @@ class ERobPriceCalculator:
         ratio = int(ratio_match.group(1)) if ratio_match else self.default_ratio.get(diameter, 120)
         
         # 提取形状类型
-        form_type = 'I'  # 默认I型
-        if 'T' in base_info[base_info.find(str(ratio)) + len(str(ratio)):]:
-            form_type = 'T'
+        form_type_match = re.search(r'\d+([IT])', base_info)
+        form_type = form_type_match.group(1) if form_type_match else 'I'
         
-        # 解析配置部分
-        config = parts[1] if len(parts) > 1 else ''
+        # 提取配置和接口
+        config = parts[1] if len(parts) > 1 else 'BHM'
+        interface = parts[2] if len(parts) > 2 else '18CN'
         
-        # 解析通信和传感器部分
-        interface = parts[2] if len(parts) > 2 else ''
+        # 确定基本型号
+        base_model = f"eRob{diameter}{gear_type}"
         
-        return {
-            'full_model': model_code + (f"[{version}]" if version else ""),
-            'base_model': f"eRob{diameter}{gear_type}",
+        # 检查形状类型是否为T型
+        is_t_type = form_type == 'T'
+        
+        # 检查接口是否为EtherCAT
+        is_ethercat = 'ET' in interface
+        
+        # 检查多圈和高精度
+        is_multiturn = 'M' in config
+        is_high_precision = 'H' in config and 'P' in config
+        
+        # 检查是否有刹车
+        has_brake = 'B' in config
+        
+        # 返回解析结果
+        result = {
+            'model_code': normalized_model,
+            'full_model': normalized_model + (f"[{version}]" if version else ""),
+            'base_model': base_model,
             'diameter': diameter,
             'gear_type': gear_type,
             'ratio': ratio,
             'form_type': form_type,
             'config': config,
             'interface': interface,
-            'version': version,
-            'has_ethercat': 'E' in interface
+            'is_t_type': is_t_type,
+            'is_ethercat': is_ethercat,
+            'is_multiturn': is_multiturn,
+            'is_high_precision': is_high_precision,
+            'has_brake': has_brake,
+            'version': version
         }
+        
+        return result
     
-    def get_price_range(self, quantity):
+    def get_price_range_index(self, quantity):
         """根据数量确定价格范围"""
         if quantity < 5:
             return 'retail'
@@ -306,281 +330,245 @@ class ERobPriceCalculator:
         else:
             return '2000+'
     
-    def calculate_price(self, model_code, quantity):
-        """计算指定型号和数量的价格"""
-        # 解析型号
-        model_info = self.parse_model_code(model_code)
+    def calculate_price(self, model_code, quantity=1):
+        """计算单个产品的价格"""
+        parsed_model = self.parse_model_code(model_code)
         
-        # 获取基础价格
-        price_range = self.get_price_range(quantity)
-        base_price = self.price_table.get(model_info['base_model'], {}).get(price_range, 0)
+        # 获取基本型号价格
+        base_model = parsed_model['base_model']
+        price_range = self.get_price_range_index(quantity)
         
-        # 计算选项价格
-        options_price = 0
+        if base_model in self.price_table:
+            base_price = self.price_table[base_model][price_range]
+        else:
+            # 未找到型号，使用默认价格
+            base_price = 1000.00
         
-        # 制动器选项
-        if 'F' in model_info['config']:  # 无制动器
-            options_price += self.option_prices['without_brake']
+        # 计算附加选项价格
+        additional_price = 0.0
         
-        # 多圈编码器
-        if 'M' in model_info['config']:
-            options_price += self.option_prices['multiturn']
+        # T型选项价格
+        if parsed_model['is_t_type']:
+            t_price = self.option_prices['t_type'].get(parsed_model['diameter'], 0)
+            additional_price += t_price
         
-        # 高精度编码器
-        if 'H' in model_info['config']:
-            options_price += self.option_prices['high_precision']
+        # 特殊版本价格（如V6）
+        if parsed_model['version'] == 'V6':
+            # 只有特定型号支持V6版本
+            v6_supported_diameters = self.option_prices['version']['V6'].keys()
+            if parsed_model['diameter'] in v6_supported_diameters:
+                v6_price = self.option_prices['version']['V6'][parsed_model['diameter']]
+                additional_price += v6_price
         
-        # 通信协议
-        if 'E' in model_info['interface']:  # EtherCAT
-            options_price += self.option_prices['ethercat']
+        # EtherCAT选项
+        if parsed_model['is_ethercat']:
+            additional_price += self.option_prices['ethercat']
         
-        # T型结构
-        if model_info['form_type'] == 'T':
-            t_price = self.option_prices['t_type'].get(model_info['diameter'], 77)
-            options_price += t_price
+        # 多圈选项
+        if parsed_model['is_multiturn']:
+            additional_price += self.option_prices['multiturn']
         
-        # 版本加价
-        if model_info['version']:
-            if model_info['version'].upper() == 'V6' and model_info['diameter'] in [80, 90, 110]:
-                version_price = self.option_prices['version']['V6'].get(model_info['diameter'], 0)
-                options_price += version_price
+        # 高精度选项
+        if parsed_model['is_high_precision']:
+            additional_price += self.option_prices['high_precision']
         
-        # 计算总价
-        unit_price = base_price + options_price
-        total_price = unit_price * quantity
+        # 无刹车时减价
+        if not parsed_model['has_brake']:
+            additional_price += self.option_prices['without_brake']
         
-        # 获取重量
-        weight = self.weights.get(model_info['diameter'], 1.0)
+        # 计算最终价格
+        final_price = base_price + additional_price
+        
+        # 获取产品重量
+        weight = self.weights.get(parsed_model['diameter'], 1.0)
         
         return {
-            'model': model_info['full_model'],
-            'normalized_model': self.normalize_model_code(model_code),
-            'base_price': base_price,
-            'options_price': options_price,
-            'unit_price': unit_price,
+            'model': parsed_model['full_model'],
             'quantity': quantity,
-            'total_price': total_price,
+            'base_price': base_price,
+            'additional_price': additional_price,
+            'unit_price': final_price,
+            'total_price': final_price * quantity,
             'weight': weight,
-            'details': {
-                'base_model': model_info['base_model'],
-                'diameter': model_info['diameter'],
-                'price_range': price_range,
-                'without_brake': 'F' in model_info['config'],
-                'multiturn': 'M' in model_info['config'],
-                'high_precision': 'H' in model_info['config'],
-                'ethercat': 'E' in model_info['interface'],
-                'form_type': model_info['form_type'],
-                'version': model_info['version']
-            }
+            'parsed_info': parsed_model
         }
     
-    def calculate_batch(self, model_codes, quantities, customer_info=None):
-        """批量计算多个型号的价格并生成完整报价单"""
-        if customer_info is None:
-            customer_info = {
-                'name': 'Customer Name',
-                'company': 'Company Name',
-                'address': 'Street Address',
-                'city': 'City',
-                'zip': 'ZIP Code',
-                'country': 'Country',
-                'phone': 'Phone Number'
-            }
+    def calculate_batch(self, model_codes, quantities, customer_info):
+        """计算多个产品的价格"""
+        if not model_codes:
+            return {"items": [], "subtotal": 0, "freight": 0, "grand_total": 0, "customer_info": customer_info}
         
         results = []
-        total_erob_quantity = 0
-        has_ethercat = False
         
+        # 计算每个产品的价格
         for i, model_code in enumerate(model_codes):
-            quantity = quantities[i] if i < len(quantities) else 1
-            result = self.calculate_price(model_code, quantity)
-            results.append(result)
-            total_erob_quantity += quantity
-            
-            # 检查是否有EtherCAT
-            model_info = self.parse_model_code(model_code)
-            if model_info['has_ethercat']:
-                has_ethercat = True
+            qty = quantities[i] if i < len(quantities) else 1
+            item_result = self.calculate_price(model_code, qty)
+            results.append(item_result)
         
-        # 添加默认配件
-        # 1. eRob Universal Accessories Kit
-        accessories_kit = {
-            'model': 'eRob Universal Accessories Kit',
-            'normalized_model': 'eRob Universal Accessories Kit',
-            'unit_price': self.accessories['eRob Universal Accessories Kit'],
-            'quantity': total_erob_quantity,
-            'total_price': self.accessories['eRob Universal Accessories Kit'] * total_erob_quantity,
-            'weight': self.weights['eRob Universal Accessories Kit'],
-            'is_accessory': True
-        }
-        results.append(accessories_kit)
+        # 统计eRob总数
+        erob_total_qty = sum(item['quantity'] for item in results)
         
-        # 2. eLine - RJ45 ECAT -30 (如果有EtherCAT)
+        # 添加配件 - eRob Universal Accessories Kit
+        kit_qty = erob_total_qty
+        if kit_qty > 0:
+            kit_price = self.accessories['eRob Universal Accessories Kit']
+            results.append({
+                'model': 'eRob Universal Accessories Kit',
+                'quantity': kit_qty,
+                'base_price': kit_price,
+                'additional_price': 0,
+                'unit_price': kit_price,
+                'total_price': kit_price * kit_qty,
+                'weight': self.weights['eRob Universal Accessories Kit'],
+                'parsed_info': None
+            })
+        
+        # 检查是否有EtherCAT产品，添加RJ45连接器
+        has_ethercat = any(item['parsed_info'] and item['parsed_info']['is_ethercat'] for item in results if item['parsed_info'])
         if has_ethercat:
-            eline = {
+            rj45_qty = erob_total_qty
+            rj45_price = self.accessories['eLine - RJ45 ECAT -30']
+            results.append({
                 'model': 'eLine - RJ45 ECAT -30',
-                'normalized_model': 'eLine - RJ45 ECAT -30',
-                'unit_price': self.accessories['eLine - RJ45 ECAT -30'],
-                'quantity': total_erob_quantity,
-                'total_price': self.accessories['eLine - RJ45 ECAT -30'] * total_erob_quantity,
+                'quantity': rj45_qty,
+                'base_price': rj45_price,
+                'additional_price': 0,
+                'unit_price': rj45_price,
+                'total_price': rj45_price * rj45_qty,
                 'weight': self.weights['eLine - RJ45 ECAT -30'],
-                'is_accessory': True
-            }
-            results.append(eline)
+                'parsed_info': None
+            })
         
-        # 3. eRob to PC Connector
-        connector = {
+        # 添加PC连接器（默认数量为1）
+        pc_connector_price = self.accessories['eRob to PC Connector']
+        pc_connector_qty = 5 if erob_total_qty > 20 else 1  # 如果eRob数量大于20，提供5个PC连接器
+        results.append({
             'model': 'eRob to PC Connector',
-            'normalized_model': 'eRob to PC Connector',
-            'unit_price': self.accessories['eRob to PC Connector'],
-            'quantity': 1,
-            'total_price': self.accessories['eRob to PC Connector'],
+            'quantity': pc_connector_qty,
+            'base_price': pc_connector_price,
+            'additional_price': 0,
+            'unit_price': pc_connector_price,
+            'total_price': pc_connector_price * pc_connector_qty,
             'weight': self.weights['eRob to PC Connector'],
-            'is_accessory': True
-        }
-        results.append(connector)
+            'parsed_info': None
+        })
         
-        # 计算总价和总重量
+        # 计算总价和合计
         subtotal = sum(item['total_price'] for item in results)
-        total_weight = sum(item['weight'] * item['quantity'] for item in results)
         
-        # 计算运费 (使用公式 ROUND(4830*1.1/6.5,0))
-        freight = round(4830 * 1.1 / 6.5, 0)
+        # 计算运费
+        total_weight = sum(item['weight'] * item['quantity'] for item in results)
+        freight = round(4830 * 1.1 / 6.5, 0)  # 使用固定公式计算运费
         
         # 计算总计
         grand_total = subtotal + freight
         
         return {
-            'items': results,
-            'subtotal': subtotal,
-            'freight': freight,
-            'grand_total': grand_total,
-            'total_weight': total_weight,
-            'customer_info': customer_info,
-            'has_ethercat': has_ethercat
+            "items": results,
+            "subtotal": subtotal,
+            "freight": freight,
+            "grand_total": grand_total,
+            "customer_info": customer_info
         }
     
-    def export_to_quotation(self, results, filename=None):
-        """将计算结果导出为标准报价单Excel表格，使用模板文件作为基础"""
-        if filename is None:
-            today = datetime.now()
-            customer_name = results['customer_info']['name'].replace(' ', '_')
-            filename = f"ZeroErr_Quotation_{customer_name}_{today.strftime('%Y%m%d')}.xlsx"
+    def export_to_quotation(self, results):
+        """导出报价单到Excel文件"""
+        # 创建工作簿
+        wb = Workbook()
+        ws = wb.active
         
-        # 模板文件路径
-        template_file = "测试.xlsx"
+        # 首先应用标准模板样式
+        apply_template_styles(ws)
         
-        # 检查模板文件是否存在
-        if not os.path.exists(template_file):
-            print(f"警告: 模板文件 '{template_file}' 不存在! 将创建新的工作簿。")
-            wb = Workbook()
-            ws = wb.active
-            # 如果没有模板，应用基本样式
-            if 'apply_template_styles' in globals():
-                apply_template_styles(ws)
-        else:
-            # 使用现有模板
-            print(f"使用模板文件: '{template_file}'")
-            wb = openpyxl.load_workbook(template_file)
-            ws = wb.active
-        
-        # 填充客户信息和报价单信息
-        customer_info = results['customer_info']
+        # 获取当前日期
         today = datetime.now()
+        date_str = today.strftime('%Y.%m.%d')
         
-        # 设置公司标题
-        ws['A1'] = "ZeroErr Control Co., Ltd."
+        # 生成报价单号
+        quotation_number = today.strftime('%Y%m%d') + '01'  # 以年月日+序号01组成
         
-        # 填充客户信息 - 左侧
-        ws['A2'] = "To:"
-        ws['A3'] = f"Company: {customer_info['company']}"
-        ws['A4'] = f"Street Address: {customer_info['address']}"
-        ws['A5'] = f"City, ST  ZIP Code: {customer_info['city']}, {customer_info['zip']}, {customer_info['country']}"
-        ws['A6'] = f"Phone: {customer_info['phone']}"
+        # 填充客户信息
+        customer_info = results['customer_info']
         
-        # 填充报价单信息 - 右侧
-        ws['E2'] = f"Date: {today.strftime('%d.%m.%Y')}"
-        quotation_number = f"{today.strftime('%Y%m%d')}01"  # 可以根据需要调整编号逻辑
-        ws['E3'] = f"Quotation #: {quotation_number}"
-        ws['E4'] = "Street Address: Fuyuan 1st, Fuhai"
-        ws['E5'] = "City, ZIP Code: Bao'an, Shen Zhen, 518103"
-        ws['E6'] = "Phone: +86 18922807806"
+        # 设置标题和客户信息（保留模板样式的基础上修改内容）
+        # 标题已经在apply_template_styles中设置了
         
-        # 设置报价单标题
-        ws['A7'] = "Quotation List"
+        # 客户信息 - To部分
+        to_text = f"To:  {customer_info.get('name', '')}\n"
+        to_text += f"Company: {customer_info.get('company', '')}\n"
+        to_text += f"Street Address: {customer_info.get('address', '')}\n"
+        to_text += f"City, ST  ZIP Code: {customer_info.get('city', '')}, {customer_info.get('zip', '')}\n"
+        to_text += f"Phone: {customer_info.get('phone', '')}"
+        ws['A2'].value = to_text
         
-        # 设置表头
-        ws['A8'] = "IMAGES"
-        ws['B8'] = "MODELS"
-        ws['C8'] = "QUANTITY (PC)"
-        ws['D8'] = "WEIGHT (KG/PC)"
-        ws['E8'] = "UNIT PRICE (USD/PC)"
-        ws['F8'] = "AMOUNT (USD)"
+        # 日期和报价号部分
+        date_text = f"Date：{date_str}\n"
+        date_text += f"Quotation #: {quotation_number}\n"
+        date_text += f"Street Address：Fuyuan 1st, Fuhai City, ZIP Code：Bao'an，Shen Zhen, 518103\n"
+        date_text += f"Phone：+86 18922807806"
+        ws['D2'].value = date_text
         
-        # 填充产品信息
-        row = 9
-        for item in results['items']:
-            # 获取产品图片路径
-            model_key = item.get('normalized_model', item.get('model', ''))
-            img_path = self.images.get(model_key, '')
+        # 填充表头 (A6:F6) - 已在apply_template_styles中设置
+        
+        # 开始填充产品列表
+        row = 8  # 从第8行开始插入产品
+        
+        for i, item in enumerate(results['items']):
+            # 插入产品图片
+            model_code = item['model']
+            if model_code in self.images and os.path.exists(self.images[model_code]):
+                try:
+                    img = Image(self.images[model_code])
+                    # 调整图片大小
+                    img.width = 60
+                    img.height = 60
+                    # 设置图片在单元格中的位置
+                    ws.add_image(img, f'A{row}')
+                except Exception as e:
+                    print(f"插入图片时出错: {e}")
             
-            # 如果没有找到精确匹配，尝试查找基本型号的图片
-            if not img_path and 'eRob' in model_key:
-                base_model = re.match(r'(eRob\d+[FH])', model_key)
-                if base_model:
-                    img_path = self.images.get(base_model.group(1), '')
+            # 填充产品信息，保持单元格样式
+            ws.cell(row=row, column=2).value = item['model']  # B列：型号
+            ws.cell(row=row, column=3).value = item['quantity']  # C列：数量
+            ws.cell(row=row, column=4).value = item['weight']  # D列：重量
+            ws.cell(row=row, column=5).value = item['unit_price']  # E列：单价
             
-            # 插入图片（如果存在）
-            if img_path and os.path.exists(img_path):
-                img = Image(img_path)
-                img.width = 60
-                img.height = 60
-                ws.add_image(img, f'A{row}')
-            
-            # 型号
-            ws.cell(row=row, column=2).value = item.get('normalized_model', item.get('model', ''))
-            
-            # 数量
-            ws.cell(row=row, column=3).value = item['quantity']
-            
-            # 重量
-            ws.cell(row=row, column=4).value = item.get('weight', 0)
-            
-            # 单价
-            ws.cell(row=row, column=5).value = item['unit_price']
-            
-            # 总价
-            ws.cell(row=row, column=6).value = f"$ {item['total_price']:,.2f}"
+            # F列：总价，使用货币格式
+            cell = ws.cell(row=row, column=6)
+            cell.value = f"$ {item['total_price']:,.2f}"
+            cell.alignment = Alignment(horizontal='right')
             
             row += 1
         
-        # 备注行
-        remarks_row = row
-        ws.cell(row=remarks_row, column=1).value = "Remarks:"
-        ws.cell(row=remarks_row+1, column=1).value = f"1. Price term: DAP {customer_info['country']}"
-        ws.cell(row=remarks_row+2, column=1).value = "2. Payment term: T/T. 100% advance payment."
-        ws.cell(row=remarks_row+3, column=1).value = "3. Leading time: 12 working days after the payment."
-        ws.cell(row=remarks_row+4, column=1).value = "4.The price needs to be updated if the exchange rate fluctuate more than 10%."
+        # 设置备注信息
+        remarks_row = row + 1
+        ws.cell(row=remarks_row, column=2).value = f"1. Price term: DAP {customer_info.get('country', 'Australia')}"
+        ws.cell(row=remarks_row+1, column=2).value = "2. Payment term: T/T, 100% advance payment."
+        ws.cell(row=remarks_row+2, column=2).value = "3. Leading time: 12 working days after received payment."
+        ws.cell(row=remarks_row+3, column=2).value = "4.The price needs to be updated if the exchange rate fluctuate more than 10%."
         
-        # 合计
+        # 设置合计金额
         ws.cell(row=remarks_row, column=5).value = "SUBTOTAL"
         ws.cell(row=remarks_row, column=6).value = f"$ {results['subtotal']:,.2f}"
+        ws.cell(row=remarks_row, column=6).alignment = Alignment(horizontal='right')
         
-        # 运费
         ws.cell(row=remarks_row+1, column=5).value = "FREIGHT"
         ws.cell(row=remarks_row+1, column=6).value = f"$ {results['freight']:,.2f}"
+        ws.cell(row=remarks_row+1, column=6).alignment = Alignment(horizontal='right')
         
-        # 其他费用
         ws.cell(row=remarks_row+2, column=5).value = "OTHER"
-        ws.cell(row=remarks_row+2, column=6).value = "-"
+        ws.cell(row=remarks_row+2, column=6).value = "$ -"
+        ws.cell(row=remarks_row+2, column=6).alignment = Alignment(horizontal='right')
         
-        # 总计
         ws.cell(row=remarks_row+3, column=5).value = "TOTAL"
         ws.cell(row=remarks_row+3, column=6).value = f"$ {results['grand_total']:,.2f}"
+        ws.cell(row=remarks_row+3, column=6).alignment = Alignment(horizontal='right')
         
         # 保存文件
+        customer_name = customer_info.get('name', 'Customer').replace(' ', '_')
+        filename = f"ZeroErr_Quotation_{customer_name}_{today.strftime('%Y%m%d')}.xlsx"
         wb.save(filename)
-        print(f"报价单已保存为: {filename}")
         return filename
 
 def main():

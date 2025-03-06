@@ -1,176 +1,198 @@
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-import json
-import os
+import pprint
 
-def extract_cell_style(cell):
-    """提取单元格的样式信息"""
-    style = {}
+def extract_cell_styles(template_file, range_str):
+    """
+    从Excel模板文件中提取指定范围单元格的样式
     
-    # 提取字体信息
-    if cell.font:
-        style['font'] = {
-            'name': cell.font.name,
-            'size': cell.font.size,
-            'bold': cell.font.bold,
-            'italic': cell.font.italic,
-            'color': cell.font.color.rgb if cell.font.color else None
-        }
+    参数:
+    template_file -- 模板文件路径
+    range_str -- 单元格范围，如'A1:F22'
     
-    # 提取对齐信息
-    if cell.alignment:
-        style['alignment'] = {
-            'horizontal': cell.alignment.horizontal,
-            'vertical': cell.alignment.vertical,
-            'wrap_text': cell.alignment.wrap_text
-        }
-    
-    # 提取填充信息
-    if cell.fill and cell.fill.fill_type != 'none':
-        style['fill'] = {
-            'fill_type': cell.fill.fill_type,
-            'start_color': cell.fill.start_color.rgb if hasattr(cell.fill.start_color, 'rgb') else None,
-            'end_color': cell.fill.end_color.rgb if hasattr(cell.fill.end_color, 'rgb') else None
-        }
-    
-    # 提取边框信息
-    if any([cell.border.left, cell.border.right, cell.border.top, cell.border.bottom]):
-        style['border'] = {}
-        for side in ['left', 'right', 'top', 'bottom']:
-            border_side = getattr(cell.border, side)
-            if border_side and border_side.style:
-                style['border'][side] = {
-                    'style': border_side.style,
-                    'color': border_side.color.rgb if border_side.color else None
-                }
-    
-    # 提取合并单元格信息
-    style['merged'] = False
-    
-    return style
-
-def extract_template_styles(template_file, range_str='A1:F22'):
-    """提取模板文件中指定范围的单元格样式"""
+    返回:
+    包含所有单元格样式的字典
+    """
     wb = openpyxl.load_workbook(template_file)
     ws = wb.active
     
-    # 解析范围字符串
+    # 解析范围
     start_cell, end_cell = range_str.split(':')
-    start_col, start_row = openpyxl.utils.cell.coordinate_from_string(start_cell)
-    end_col, end_row = openpyxl.utils.cell.coordinate_from_string(end_cell)
+    start_col = ord(start_cell[0]) - ord('A') + 1
+    start_row = int(start_cell[1:])
+    end_col = ord(end_cell[0]) - ord('A') + 1
+    end_row = int(end_cell[1:])
     
-    start_col_idx = openpyxl.utils.column_index_from_string(start_col)
-    end_col_idx = openpyxl.utils.column_index_from_string(end_col)
-    
-    # 提取样式
     styles = {}
-    merged_cells = ws.merged_cells.ranges
     
     for row in range(start_row, end_row + 1):
-        for col_idx in range(start_col_idx, end_col_idx + 1):
-            col = openpyxl.utils.get_column_letter(col_idx)
-            cell_coord = f"{col}{row}"
-            cell = ws[cell_coord]
+        for col in range(start_col, end_col + 1):
+            cell = ws.cell(row=row, column=col)
+            cell_addr = f"{chr(64 + col)}{row}"
             
-            # 检查是否为合并单元格
-            for merged_range in merged_cells:
-                if cell_coord in merged_range:
-                    if cell_coord == merged_range.coord.split(':')[0]:  # 如果是合并单元格的左上角
-                        styles[cell_coord] = extract_cell_style(cell)
-                        styles[cell_coord]['merged'] = str(merged_range)
+            # 提取单元格样式
+            cell_style = {
+                'value': cell.value,
+                'font': {
+                    'name': cell.font.name,
+                    'size': cell.font.size,
+                    'bold': cell.font.bold,
+                    'italic': cell.font.italic,
+                    'color': cell.font.color.rgb if cell.font.color else None
+                },
+                'alignment': {
+                    'horizontal': cell.alignment.horizontal,
+                    'vertical': cell.alignment.vertical,
+                    'wrap_text': cell.alignment.wrap_text
+                },
+                'fill': {
+                    'fill_type': cell.fill.fill_type,
+                    'start_color': cell.fill.start_color.rgb if cell.fill.start_color else None,
+                    'end_color': cell.fill.end_color.rgb if cell.fill.end_color else None
+                },
+                'border': {
+                    'left': {
+                        'style': cell.border.left.style if cell.border.left else None,
+                        'color': cell.border.left.color.rgb if cell.border.left and cell.border.left.color else None
+                    },
+                    'right': {
+                        'style': cell.border.right.style if cell.border.right else None,
+                        'color': cell.border.right.color.rgb if cell.border.right and cell.border.right.color else None
+                    },
+                    'top': {
+                        'style': cell.border.top.style if cell.border.top else None,
+                        'color': cell.border.top.color.rgb if cell.border.top and cell.border.top.color else None
+                    },
+                    'bottom': {
+                        'style': cell.border.bottom.style if cell.border.bottom else None,
+                        'color': cell.border.bottom.color.rgb if cell.border.bottom and cell.border.bottom.color else None
+                    }
+                }
+            }
+            
+            # 检查合并单元格
+            for merged_cell in ws.merged_cells.ranges:
+                if cell.coordinate in merged_cell:
+                    cell_style['merged'] = str(merged_cell)
                     break
-            else:
-                styles[cell_coord] = extract_cell_style(cell)
+            
+            styles[cell_addr] = cell_style
     
     return styles
 
-def generate_style_application_code(styles):
-    """生成应用样式的Python代码"""
-    code = []
-    code.append("# 应用模板样式")
-    code.append("def apply_template_styles(ws):")
-    code.append("    # 定义常用样式")
-    code.append("    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))")
-    code.append("    # 应用单元格样式")
+def generate_style_code(styles):
+    """
+    生成应用样式的Python代码
     
-    for cell_coord, style in styles.items():
-        code.append(f"    # 设置 {cell_coord} 单元格样式")
+    参数:
+    styles -- 包含单元格样式的字典
+    
+    返回:
+    Python代码字符串
+    """
+    code = """
+def apply_template_styles(ws):
+    # 定义常用样式
+    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+    
+    # 应用合并单元格
+"""
+    
+    # 处理合并单元格
+    merged_cells = {}
+    for cell_addr, style in styles.items():
+        if 'merged' in style:
+            merged_cells[style['merged']] = True
+    
+    for merged_range in merged_cells:
+        code += f"    ws.merge_cells('{merged_range}')\n"
+    
+    code += "\n    # 应用单元格样式\n"
+    
+    # 处理单元格样式
+    for cell_addr, style in styles.items():
+        code += f"    # 设置 {cell_addr} 单元格样式\n"
         
-        # 处理合并单元格
-        if style.get('merged'):
-            code.append(f"    ws.merge_cells('{style['merged']}')")
+        # 设置值
+        if style['value'] is not None:
+            if isinstance(style['value'], str):
+                # 处理多行文本
+                value = style['value'].replace('\n', '\\n').replace("'", "\\'")
+                code += f"    ws['{cell_addr}'].value = '{value}'\n"
+            else:
+                # 处理公式和数值
+                if isinstance(style['value'], str) and style['value'].startswith('='):
+                    # 这是公式
+                    code += f"    ws['{cell_addr}'].value = '{style['value']}'\n"
+                else:
+                    code += f"    ws['{cell_addr}'].value = {style['value']}\n"
         
         # 设置字体
-        if 'font' in style:
-            font = style['font']
-            font_params = []
-            if font.get('name'):
-                font_params.append(f"name='{font['name']}'")
-            if font.get('size'):
-                font_params.append(f"size={font['size']}")
-            if font.get('bold'):
-                font_params.append(f"bold={font['bold']}")
-            if font.get('italic'):
-                font_params.append(f"italic={font['italic']}")
-            if font.get('color'):
-                font_params.append(f"color='{font['color']}'")
-            
-            if font_params:
-                code.append(f"    ws['{cell_coord}'].font = Font({', '.join(font_params)})")
+        font_props = []
+        if style['font']['name']:
+            font_props.append(f"name='{style['font']['name']}'")
+        if style['font']['size']:
+            font_props.append(f"size={style['font']['size']}")
+        if style['font']['bold']:
+            font_props.append(f"bold={style['font']['bold']}")
+        if style['font']['italic']:
+            font_props.append(f"italic={style['font']['italic']}")
+        if style['font']['color'] and isinstance(style['font']['color'], str):
+            font_props.append(f"color='{style['font']['color']}'")
+        
+        if font_props:
+            code += f"    ws['{cell_addr}'].font = Font({', '.join(font_props)})\n"
         
         # 设置对齐
-        if 'alignment' in style:
-            align = style['alignment']
-            align_params = []
-            if align.get('horizontal'):
-                align_params.append(f"horizontal='{align['horizontal']}'")
-            if align.get('vertical'):
-                align_params.append(f"vertical='{align['vertical']}'")
-            if align.get('wrap_text'):
-                align_params.append(f"wrap_text={align['wrap_text']}")
-            
-            if align_params:
-                code.append(f"    ws['{cell_coord}'].alignment = Alignment({', '.join(align_params)})")
+        align_props = []
+        if style['alignment']['horizontal']:
+            align_props.append(f"horizontal='{style['alignment']['horizontal']}'")
+        if style['alignment']['vertical']:
+            align_props.append(f"vertical='{style['alignment']['vertical']}'")
+        if style['alignment']['wrap_text']:
+            align_props.append(f"wrap_text={style['alignment']['wrap_text']}")
+        
+        if align_props:
+            code += f"    ws['{cell_addr}'].alignment = Alignment({', '.join(align_props)})\n"
         
         # 设置填充
-        if 'fill' in style and style['fill'].get('start_color'):
-            fill = style['fill']
-            code.append(f"    ws['{cell_coord}'].fill = PatternFill(fill_type='{fill['fill_type']}', start_color='{fill['start_color']}', end_color='{fill['end_color'] or fill['start_color']}')")
+        if style['fill']['fill_type'] and style['fill']['fill_type'].lower() != 'none' and style['fill']['start_color']:
+            start_color = f"'{style['fill']['start_color']}'" if isinstance(style['fill']['start_color'], str) else 'None'
+            end_color = f"'{style['fill']['end_color']}'" if style['fill']['end_color'] and isinstance(style['fill']['end_color'], str) else start_color
+            code += f"    ws['{cell_addr}'].fill = PatternFill(fill_type='{style['fill']['fill_type']}', start_color={start_color}, end_color={end_color})\n"
         
         # 设置边框
-        if 'border' in style:
-            border = style['border']
-            if len(border) == 4:  # 如果四边都有边框
-                code.append(f"    ws['{cell_coord}'].border = thin_border")
-            else:
-                border_params = []
-                for side, border_style in border.items():
-                    border_params.append(f"{side}=Side(style='{border_style['style']}', color='{border_style['color']}')")
-                
-                if border_params:
-                    code.append(f"    ws['{cell_coord}'].border = Border({', '.join(border_params)})")
+        border_sides = []
+        for side in ['left', 'right', 'top', 'bottom']:
+            if style['border'][side]['style']:
+                color_str = ""
+                if style['border'][side]['color'] and isinstance(style['border'][side]['color'], str):
+                    color_str = f", color='{style['border'][side]['color']}'"
+                border_sides.append(f"{side}=Side(style='{style['border'][side]['style']}'{color_str})")
+        
+        if border_sides:
+            code += f"    ws['{cell_addr}'].border = Border({', '.join(border_sides)})\n"
+        
+        code += "\n"
     
-    return "\n".join(code)
+    return code
 
 def main():
-    template_file = "测试.xlsx"
+    template_file = "测试.xlsx"  # 替换为您的模板文件路径
+    cell_range = "A1:F22"  # 替换为您需要提取的单元格范围
+    
+    print(f"从 {template_file} 提取 {cell_range} 范围的单元格样式...")
+    styles = extract_cell_styles(template_file, cell_range)
+    
+    code = generate_style_code(styles)
+    
+    # 保存到文件
     output_file = "template_styles.py"
-    
-    if not os.path.exists(template_file):
-        print(f"错误: 模板文件 '{template_file}' 不存在!")
-        return
-    
-    print(f"正在提取 '{template_file}' 的样式...")
-    styles = extract_template_styles(template_file)
-    
-    print(f"生成样式应用代码...")
-    code = generate_style_application_code(styles)
-    
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(code)
     
-    print(f"样式代码已生成到 '{output_file}'")
-    print("请将此代码集成到 generate.py 中，并在创建Excel文件时调用 apply_template_styles(ws) 函数")
+    print(f"样式代码已生成并保存到 {output_file}")
+    print("请将生成的代码复制到 generate.py 中使用")
 
 if __name__ == "__main__":
     main()
